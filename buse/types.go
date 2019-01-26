@@ -2,6 +2,7 @@ package buse
 
 import (
 	"os"
+	"sync"
 )
 
 // Rewrote type definitions for #defines and structs to workaround cgo
@@ -45,7 +46,7 @@ type nbdRequest struct {
 	Magic  uint32
 	Type   uint32
 	Handle uint64
-	From   uint64
+	Offset uint64
 	Length uint32
 }
 
@@ -56,19 +57,19 @@ type nbdReply struct {
 }
 
 type BuseInterface interface {
-	ReadAt(p []byte, off uint) error
-	WriteAt(p []byte, off uint) error
+	ReadAt(p []byte, off uint64) error
+	WriteAt(p []byte, off uint64) error
 	Disconnect()
 	Flush() error
-	Trim(off uint, length uint) error
+	Trim(off uint64, length uint32) error
 }
 
 type BuseDevice struct {
-	size       uint
+	size       uint64
 	device     string
 	driver     BuseInterface
 	deviceFp   *os.File
 	socketPair [2]int
-	op         [5]func(driver BuseInterface, fp *os.File, chunk []byte, request *nbdRequest, reply *nbdReply) error
+	op         [5]func(driver BuseInterface, fp *os.File, writeMutex *sync.Mutex, chunk []byte, request *nbdRequest) error
 	disconnect chan int
 }

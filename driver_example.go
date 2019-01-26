@@ -6,23 +6,26 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"time"
 
-	"github.com/samalba/buse-go/buse"
+	"./buse"
 )
 
-// This device is an example implementation of an in-memory block device
+// This device is an example implementation of an in-memory block device with high latency of reads/writes
 
 type DeviceExample struct {
 	dataset []byte
 }
 
-func (d *DeviceExample) ReadAt(p []byte, off uint) error {
+func (d *DeviceExample) ReadAt(p []byte, off uint64) error {
+	time.Sleep(5 * time.Millisecond)
 	copy(p, d.dataset[off:int(off)+len(p)])
 	log.Printf("[DeviceExample] READ offset:%d len:%d\n", off, len(p))
 	return nil
 }
 
-func (d *DeviceExample) WriteAt(p []byte, off uint) error {
+func (d *DeviceExample) WriteAt(p []byte, off uint64) error {
+	time.Sleep(5 * time.Millisecond)
 	copy(d.dataset[off:], p)
 	log.Printf("[DeviceExample] WRITE offset:%d len:%d\n", off, len(p))
 	return nil
@@ -37,7 +40,7 @@ func (d *DeviceExample) Flush() error {
 	return nil
 }
 
-func (d *DeviceExample) Trim(off, length uint) error {
+func (d *DeviceExample) Trim(off uint64, length uint32) error {
 	log.Printf("[DeviceExample] TRIM offset:%d len:%d\n", off, length)
 	return nil
 }
@@ -55,7 +58,7 @@ func main() {
 	if len(args) < 1 {
 		usage()
 	}
-	size := uint(1024 * 1024 * 512) // 512M
+	size := uint64(1024 * 1024 * 512) // 512M
 	deviceExp := &DeviceExample{}
 	deviceExp.dataset = make([]byte, size)
 	device, err := buse.CreateDevice(args[0], size, deviceExp)

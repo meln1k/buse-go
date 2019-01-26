@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -17,14 +18,17 @@ func ioctl(fd, op, arg uintptr) {
 	}
 }
 
-func opDeviceRead(driver BuseInterface, fp *os.File, chunk []byte, request *nbdRequest, reply *nbdReply) error {
-	if err := driver.ReadAt(chunk, uint(request.From)); err != nil {
+func opDeviceRead(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
+	var error uint32
+	if err := driver.ReadAt(chunk, request.Offset); err != nil {
 		log.Println("buseDriver.ReadAt returned an error:", err)
 		// Reply with an EPERM
-		reply.Error = 1
+		error = 1
 	}
-	buf := writeNbdReply(reply)
-	if _, err := fp.Write(buf); err != nil {
+	header := nbdReplyHeader(request.Handle, error)
+	mutex.Lock()
+	defer mutex.Unlock()
+	if _, err := fp.Write(header); err != nil {
 		log.Println("Write error, when sending reply header:", err)
 	}
 	if _, err := fp.Write(chunk); err != nil {
@@ -33,46 +37,53 @@ func opDeviceRead(driver BuseInterface, fp *os.File, chunk []byte, request *nbdR
 	return nil
 }
 
-func opDeviceWrite(driver BuseInterface, fp *os.File, chunk []byte, request *nbdRequest, reply *nbdReply) error {
-	if _, err := io.ReadFull(fp, chunk); err != nil {
-		return fmt.Errorf("Fatal error, cannot read request packet: %s", err)
-	}
-	if err := driver.WriteAt(chunk, uint(request.From)); err != nil {
+func opDeviceWrite(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
+	var error uint32
+	if err := driver.WriteAt(chunk, request.Offset); err != nil {
 		log.Println("buseDriver.WriteAt returned an error:", err)
-		reply.Error = 1
+		error = 1
 	}
-	buf := writeNbdReply(reply)
-	if _, err := fp.Write(buf); err != nil {
+	header := nbdReplyHeader(request.Handle, error)
+	mutex.Lock()
+	defer mutex.Unlock()
+	if _, err := fp.Write(header); err != nil {
 		log.Println("Write error, when sending reply header:", err)
 	}
 	return nil
 }
 
-func opDeviceDisconnect(driver BuseInterface, fp *os.File, chunk []byte, request *nbdRequest, reply *nbdReply) error {
+func opDeviceDisconnect(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
 	log.Println("Calling buseDriver.Disconnect()")
 	driver.Disconnect()
 	return fmt.Errorf("Received a disconnect")
 }
 
-func opDeviceFlush(driver BuseInterface, fp *os.File, chunk []byte, request *nbdRequest, reply *nbdReply) error {
+func opDeviceFlush(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
+	var error uint32
 	if err := driver.Flush(); err != nil {
 		log.Println("buseDriver.Flush returned an error:", err)
-		reply.Error = 1
+		error = 1
 	}
-	buf := writeNbdReply(reply)
-	if _, err := fp.Write(buf); err != nil {
+	header := nbdReplyHeader(request.Handle, error)
+	mutex.Lock()
+	defer mutex.Unlock()
+	if _, err := fp.Write(header); err != nil {
 		log.Println("Write error, when sending reply header:", err)
 	}
 	return nil
 }
 
-func opDeviceTrim(driver BuseInterface, fp *os.File, chunk []byte, request *nbdRequest, reply *nbdReply) error {
-	if err := driver.Trim(uint(request.From), uint(request.Length)); err != nil {
+func opDeviceTrim(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
+	var error uint32
+
+	if err := driver.Trim(request.Offset, request.Length); err != nil {
 		log.Println("buseDriver.Flush returned an error:", err)
-		reply.Error = 1
+		error = 1
 	}
-	buf := writeNbdReply(reply)
-	if _, err := fp.Write(buf); err != nil {
+	header := nbdReplyHeader(request.Handle, error)
+	mutex.Lock()
+	defer mutex.Unlock()
+	if _, err := fp.Write(header); err != nil {
 		log.Println("Write error, when sending reply header:", err)
 	}
 	return nil
@@ -107,17 +118,17 @@ func readNbdRequest(buf []byte, request *nbdRequest) {
 	request.Magic = binary.BigEndian.Uint32(buf)
 	request.Type = binary.BigEndian.Uint32(buf[4:8])
 	request.Handle = binary.BigEndian.Uint64(buf[8:16])
-	request.From = binary.BigEndian.Uint64(buf[16:24])
+	request.Offset = binary.BigEndian.Uint64(buf[16:24])
 	request.Length = binary.BigEndian.Uint32(buf[24:28])
 }
 
-func writeNbdReply(reply *nbdReply) []byte {
-	buf := make([]byte, unsafe.Sizeof(*reply))
+func nbdReplyHeader(handle uint64, error uint32) []byte {
+	buf := make([]byte, 16)
 	binary.BigEndian.PutUint32(buf[0:4], NBD_REPLY_MAGIC)
-	binary.BigEndian.PutUint32(buf[4:8], reply.Error)
-	binary.BigEndian.PutUint64(buf[8:16], reply.Handle)
+	binary.BigEndian.PutUint32(buf[4:8], error)
+	binary.BigEndian.PutUint64(buf[8:16], handle)
 	// NOTE: a struct in go has 4 extra bytes, so we skip the last
-	return buf[0:16]
+	return buf
 }
 
 // Connect connects a BuseDevice to an actual device file
@@ -131,21 +142,24 @@ func (bd *BuseDevice) Connect() error {
 		return fmt.Errorf("Cannot reach the device %s: %s", bd.device, err)
 	}
 	tmp.Close()
-	// Start handling requests
-	request := nbdRequest{}
-	reply := nbdReply{Magic: NBD_REPLY_MAGIC}
 	fp := os.NewFile(uintptr(bd.socketPair[0]), "unix")
-	// NOTE: a struct in go has 4 extra bytes...
-	buf := make([]byte, unsafe.Sizeof(request))
+	mutex := &sync.Mutex{}
+
+	// Start handling requests
 	for true {
+		request := nbdRequest{}
+		// NOTE: a struct in go has 4 extra bytes...
+		buf := make([]byte, unsafe.Sizeof(request))
 		if _, err := fp.Read(buf[0:28]); err != nil {
 			return fmt.Errorf("NBD client stopped: %s", err)
 		}
+
 		readNbdRequest(buf, &request)
-		fmt.Printf("DEBUG %#v\n", request)
+		// fmt.Printf("DEBUG %#v\n", request)
 		if request.Magic != NBD_REQUEST_MAGIC {
 			return fmt.Errorf("Fatal error: received packet with wrong Magic number")
 		}
+		reply := nbdReply{Magic: NBD_REPLY_MAGIC}
 		reply.Handle = request.Handle
 		chunk := make([]byte, request.Length)
 		reply.Error = 0
@@ -154,14 +168,18 @@ func (bd *BuseDevice) Connect() error {
 			log.Println("Received unknown request:", request.Type)
 			continue
 		}
-		if err := bd.op[request.Type](bd.driver, fp, chunk, &request, &reply); err != nil {
-			return err
+		if request.Type == NBD_CMD_WRITE {
+			if _, err := io.ReadFull(fp, chunk); err != nil {
+				return fmt.Errorf("Fatal error, cannot read request packet: %s", err)
+			}
 		}
+		// asynchronously handle the rest
+		go bd.op[request.Type](bd.driver, fp, mutex, chunk, &request)
 	}
 	return nil
 }
 
-func CreateDevice(device string, size uint, buseDriver BuseInterface) (*BuseDevice, error) {
+func CreateDevice(device string, size uint64, buseDriver BuseInterface) (*BuseDevice, error) {
 	buseDevice := &BuseDevice{size: size, device: device, driver: buseDriver}
 	sockPair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
