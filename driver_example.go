@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"time"
 
-	"./buse"
+	"github.com/meln1k/buse-go/buse"
 )
 
 // This device is an example implementation of an in-memory block device with high latency of reads/writes
@@ -61,7 +61,7 @@ func main() {
 	size := uint64(1024 * 1024 * 512) // 512M
 	deviceExp := &DeviceExample{}
 	deviceExp.dataset = make([]byte, size)
-	device, err := buse.CreateDevice(args[0], size, deviceExp)
+	device, err := buse.CreateDevice(args[0], size, deviceExp, 64)
 	if err != nil {
 		fmt.Printf("Cannot create device: %s\n", err)
 		os.Exit(1)
