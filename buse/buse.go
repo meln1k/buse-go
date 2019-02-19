@@ -18,13 +18,17 @@ func ioctl(fd, op, arg uintptr) {
 }
 
 func opDeviceRead(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
-	var error uint32
+	var nbdErrorReplyCode uint32
 	if err := driver.ReadAt(chunk, request.Offset); err != nil {
-		log.Println("buseDriver.ReadAt returned an error:", err)
-		// Reply with an EPERM
-		error = 1
+		log.Println("buseDriver.WriteAt returned an error:", err)
+		nbdErr, ok := err.(NbdError)
+		if ok {
+			nbdErrorReplyCode = nbdErr.value
+		} else { // not an NbdError, shouldn't happen in general
+			nbdErrorReplyCode = EPERM
+		}
 	}
-	header := nbdReplyHeader(request.Handle, error)
+	header := nbdReplyHeader(request.Handle, nbdErrorReplyCode)
 	mutex.Lock()
 	defer mutex.Unlock()
 	if _, err := fp.Write(header); err != nil {
@@ -37,12 +41,17 @@ func opDeviceRead(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []
 }
 
 func opDeviceWrite(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
-	var error uint32
+	var nbdErrorReplyCode uint32
 	if err := driver.WriteAt(chunk, request.Offset); err != nil {
 		log.Println("buseDriver.WriteAt returned an error:", err)
-		error = 1
+		nbdErr, ok := err.(NbdError)
+		if ok {
+			nbdErrorReplyCode = nbdErr.value
+		} else { // not an NbdError, shouldn't happen in general
+			nbdErrorReplyCode = EPERM
+		}
 	}
-	header := nbdReplyHeader(request.Handle, error)
+	header := nbdReplyHeader(request.Handle, nbdErrorReplyCode)
 	mutex.Lock()
 	defer mutex.Unlock()
 	if _, err := fp.Write(header); err != nil {
@@ -58,12 +67,17 @@ func opDeviceDisconnect(driver BuseInterface, fp *os.File, mutex *sync.Mutex, ch
 }
 
 func opDeviceFlush(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
-	var error uint32
+	var nbdErrorReplyCode uint32
 	if err := driver.Flush(); err != nil {
-		log.Println("buseDriver.Flush returned an error:", err)
-		error = 1
+		log.Println("buseDriver.WriteAt returned an error:", err)
+		nbdErr, ok := err.(NbdError)
+		if ok {
+			nbdErrorReplyCode = nbdErr.value
+		} else { // not an NbdError, shouldn't happen in general
+			nbdErrorReplyCode = EPERM
+		}
 	}
-	header := nbdReplyHeader(request.Handle, error)
+	header := nbdReplyHeader(request.Handle, nbdErrorReplyCode)
 	mutex.Lock()
 	defer mutex.Unlock()
 	if _, err := fp.Write(header); err != nil {
@@ -73,13 +87,17 @@ func opDeviceFlush(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk [
 }
 
 func opDeviceTrim(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []byte, request *nbdRequest) error {
-	var error uint32
-
+	var nbdErrorReplyCode uint32
 	if err := driver.Trim(request.Offset, request.Length); err != nil {
-		log.Println("buseDriver.Flush returned an error:", err)
-		error = 1
+		log.Println("buseDriver.WriteAt returned an error:", err)
+		nbdErr, ok := err.(NbdError)
+		if ok {
+			nbdErrorReplyCode = nbdErr.value
+		} else { // not an NbdError, shouldn't happen in general
+			nbdErrorReplyCode = EPERM
+		}
 	}
-	header := nbdReplyHeader(request.Handle, error)
+	header := nbdReplyHeader(request.Handle, nbdErrorReplyCode)
 	mutex.Lock()
 	defer mutex.Unlock()
 	if _, err := fp.Write(header); err != nil {
