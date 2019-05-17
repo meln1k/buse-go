@@ -109,7 +109,7 @@ func opDeviceTrim(driver BuseInterface, fp *os.File, mutex *sync.Mutex, chunk []
 func (bd *BuseDevice) startNBDClient() {
 	ioctl(bd.deviceFp.Fd(), NBD_SET_SOCK, uintptr(bd.socketPair[1]))
 	// The call below may fail on some systems (if flags unset), could be ignored
-	ioctl(bd.deviceFp.Fd(), NBD_SET_FLAGS, NBD_FLAG_SEND_TRIM|NBD_FLAG_SEND_FLUSH)
+	ioctl(bd.deviceFp.Fd(), NBD_SET_FLAGS, NBD_FLAG_SEND_TRIM)
 	// The following call will block until the client disconnects
 	log.Println("Starting NBD client...")
 	go ioctl(bd.deviceFp.Fd(), NBD_DO_IT, 0)
